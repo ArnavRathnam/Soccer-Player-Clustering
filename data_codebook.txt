@@ -1,0 +1,58 @@
+Columns
+
+Pos -- Position
+  Position most commonly played by the player
+  GK - Goalkeepers
+  DF - Defenders
+  MF - Midfielders
+  FW - Forwards
+
+90s -- 90s Played
+  Minutes played divided by 90
+  
+G-PK -- Non-Penalty Goals
+  Non-Penalty Goals
+  I do not want penalty goals to impact the data
+  
+Ast -- Assists
+  Assists
+  
+npxG -- npxG: Non-penalty Expected Goals
+  Non-penalty Expected Goals
+  npxG is the probabilty that a shot goes in based off of a variety of factors not including penalites
+  
+xAG -- xAG: Exp. Assisted Goals
+  Expected Assisted Goals
+  xG which follows a pass that assists a shot
+  
+PrgC -- Progressive Carries
+  Carries that move the ball towards the opponent's goal line at least 10 yards from its furthest point in the last six   passes, or any carry into the penalty area. Excludes carries which end in the defending 50% of the pitch  
+  
+PrgP -- Progressive Passes
+  Progressive Passes
+  Completed passes that move the ball towards the opponent's goal line at least 10 yards from its furthest point in the   last six passes, or any completed pass into the penalty area. Excludes passes from the defending 40% of the pitch
+  
+Att -- Passes Attempted
+  Passes Attempted
+  
+Cmp% -- Pass Completion %
+  Pass Completion Percentage
+  
+Tkl -- Tackles
+  Number of players tackled
+  
+Blocks -- Blocks
+  Number of times blocking the ball by standing in its path
+
+Int -- Interceptions
+  Interceptions
+  
+Clr -- Clearances
+  Clearances
+
+TakeAtt -- Take-Ons Attempted
+  Number of attempts to take on defenders while dribbling
+  
+Succ% -- Successful Take-On %
+  Percentage of Take-Ons Completed Successfully
+  Unsuccessful take-ons include attempts where the dribbler retained possession but was unable to get past the defender

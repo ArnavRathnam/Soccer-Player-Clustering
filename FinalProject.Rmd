@@ -1,0 +1,405 @@
+---
+title: "PSTAT 131 Final Project"
+author: "Arnav Rathnam"
+date: "2024-05-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In the game of soccer, positions are getting more and more complex and ambiguous. In the past, players in the same position, like fullback or strikers, would play the same way. However in the modern game, positions refer more to the position on the field rather than their impact on the field. For example, a winger like Mohamed Salah, who finds himself around the penalty area and is a primary goalscorer, brings a very different skill set than a winger like Phil Foden, who often joins in the build up play and looks to create chances for others. As teams are creating new systems that haven't been seen before, they need to look at the specific qualities a player brings to the table rather than just a player who fills a position of need.
+
+In this report, I will be using clustering models such as K-means clustering, Principal Component Analysis, and hierarchical clustering to group players by their skill sets rather than by positions. Statistics such as goals, assists, passes, clearances, tackles, and more will be used to create these clusters and find similarities between players across Europe's top 5 leagues.
+
+```{r, results='hide'}
+library(ISLR)
+library(ISLR2)
+library(tidyverse)
+library(tidymodels)
+library(readr)
+library(corrr)
+library(corrplot)
+library(themis)
+library(discrim)
+library(klaR)
+library(gghighlight)
+library(tune)
+library(pals)
+tidymodels_prefer()
+```
+
+## The Data
+
+The data used in this report comes from Football Reference's European top 5 Leagues dataset (<https://fbref.com/en/comps/Big5/stats/players/Big-5-European-Leagues-Stats>). I scraped the data from the different tabs of data included in the website and selected the data that I was interested in.
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+require("dplyr")
+library(janitor)
+#Scraping data from online
+standard_stats_raw = xml2::read_html("https://fbref.com/en/comps/Big5/stats/players/Big-5-European-Leagues-Stats") %>% rvest::html_nodes("#stats_standard") %>% rvest::html_table()
+standard_stats_raw = standard_stats_raw[[1]]
+
+shooting_stats_raw = xml2::read_html("https://fbref.com/en/comps/Big5/shooting/players/Big-5-European-Leagues-Stats") %>% rvest::html_nodes("#stats_shooting") %>% rvest::html_table()
+shooting_stats_raw = shooting_stats_raw[[1]]
+
+passing_stats_raw = xml2::read_html("https://fbref.com/en/comps/Big5/passing/players/Big-5-European-Leagues-Stats") %>% rvest::html_nodes("#stats_passing") %>% rvest::html_table()
+passing_stats_raw = passing_stats_raw[[1]]
+
+possession_stats_raw = xml2::read_html("https://fbref.com/en/comps/Big5/possession/players/Big-5-European-Leagues-Stats") %>% rvest::html_nodes("#stats_possession") %>% rvest::html_table()
+possession_stats_raw = possession_stats_raw[[1]]
+
+defense_stats_raw = xml2::read_html("https://fbref.com/en/comps/Big5/defense/players/Big-5-European-Leagues-Stats") %>% rvest::html_nodes("#stats_defense") %>% rvest::html_table()
+defense_stats_raw = defense_stats_raw[[1]]
+
+
+#Making row 1 the variable names of the datasets
+standard_stats<-standard_stats_raw %>% 
+  row_to_names(1)
+
+shooting_stats<-shooting_stats_raw %>% 
+  row_to_names(1)
+
+passing_stats_long<-passing_stats_raw %>% 
+  row_to_names(1)
+passing_stats<-passing_stats_long %>% 
+  select(1:12)
+
+possession_stats<-possession_stats_raw %>% 
+  row_to_names(1) %>% 
+  rename('TakeAtt'=Att)
+
+defense_stats_long<-defense_stats_raw %>% 
+  row_to_names(1)
+defense_stats<-defense_stats_long %>% 
+  select(1:12,19:26)
+
+```
+
+I combined the data from the different tabs into one complete data set. To look get more information about the statistics that I have chosen, look at the data.txt file.
+
+```{r}
+
+#Combining all wanted variables from the datasets (Player, `90s`, `G-PK`, npxG, Ast, xAG, Att, `Cmp%`, PrgP, PrgC, TakeAtt, `Succ%`, Tkl, Int, Blocks, Clr)
+player_stats<-cbind(standard_stats, passing_stats, possession_stats, defense_stats) %>% 
+  select(2,4,12,14,16,22,23,25,26,49,50,67,69,92,95,98,100) %>% 
+  filter(!Player=="Player")
+
+player_stats <- player_stats %>% 
+  mutate_at(c('90s', 'G-PK', 'npxG', 'Ast', 'xAG', 'Att', 'Cmp%', 'PrgP', 'PrgC', 'TakeAtt', 'Succ%','Tkl', 'Int', 'Blocks', 'Clr'), as.numeric)
+```
+
+Taking a look at the distribution of 90s played, we can see there is a significant drop off.
+
+```{r}
+player_stats %>% 
+  ggplot(aes(x=`90s`)) +
+  geom_histogram(aes(y=after_stat(density)), bins = 30) +
+  labs(y = "Density", x = "Total 90s Played", title = "Distribution of Total 90s Played in a Season")
+```
+
+I determined that a good cutoff for 90s played would be 10 90s played or 900 total minutes. This ensures that the players used in the algorithm are players that are playing consistently.
+
+```{r, warning=FALSE}
+#filter players who have played less than 10 90s.
+
+player_stats <- player_stats %>% 
+  filter(`90s` >= 10) %>% 
+  filter(`Succ%` > 0)
+```
+
+```{r}
+player_stats %>% 
+  ggplot((aes(x=`Succ%`))) +
+  geom_histogram(bins = 20) +
+  labs( x = "Dribble Completion %", title = "Distribution of Dribble Completion %")
+```
+
+Looking at the distribution of dribble completion percentage, there seems to be an unusual amount of players that have 100% success rates. This seems like an unreasonable amount for an active player to achieve. Lets take a closer look.
+
+```{r}
+sorted_succ <- player_stats %>% 
+  dplyr::arrange(desc(`Succ%`)) %>% 
+  select(Player, Pos, `Succ%`)
+head(sorted_succ)
+```
+
+It seems as though the majority of players that have a 100% success rate are goalkeepers. For the purpose of this report, I will remove goalkeepers from the clustering algorithms to avoid outliers.
+
+```{r}
+player_stats<-player_stats %>% 
+  filter(Pos!='GK')
+```
+
+I converted all of the counting stats to a per 90 basis in order to account for players who's reason for having high statistics is solely due to their minutes played.
+
+```{r, warning=FALSE}
+#convert all stats to per 90 basis
+player_stats_p90 <- player_stats %>% 
+  mutate(across(c(4:10, 12, 14:17), .fns = ~./`90s`))
+
+#Rounding all values to 2 decimal points and replacing NA values with 0
+player_stats_p90 <- player_stats_p90%>% 
+  mutate(across(where(is.numeric), round, digits=2)) %>% 
+  mutate_all(~replace(., is.na(.), 0))
+```
+
+Looking at the correlation plot, all the data seems to be in order. All of the statistics that I would expect to be correlated are correlated.
+
+```{r}
+player_stats_p90 %>% 
+  select(where(is.numeric), -`90s`) %>% 
+  cor(use='complete.obs') %>% 
+  corrplot(type='lower', diag=F,method='square')
+```
+
+## K-Means Clustering
+
+The first step in the K-Means Clustering process is to figure out how many clusters to group the players into. The optimal k will do the best job at both ensuring observations within the same cluster are as similar as possible and observations in different clusters are as different as possible. Here I apply the k-means algorithm for 1 to 25 clusters and observe their sum of squares value.
+
+```{r}
+#Scaling Stats for K-Means
+number_stats <- player_stats_p90 %>% 
+  select(-Player, -`90s`, -Pos) %>% 
+  scale()
+```
+
+```{r}
+set.seed(3333)
+MAX_K <- 25
+sse <- c()
+
+for (k in 1:MAX_K) {
+  algo_k <- kmeans(number_stats, centers=k, nstart=22, iter.max = 20)
+  sse <- c(sse, algo_k$tot.withinss)
+} 
+```
+
+```{r}
+tibble(k = 1:MAX_K, SSE = sse) %>%
+  ggplot(aes(x=k, y=SSE)) + 
+  geom_point(color="#F84C1E") + geom_line(color="#232D4B") +
+  labs(x = "K", y = "SSE", title = "Finding Optimal K Value") +
+  scale_x_continuous(breaks=seq(1, MAX_K, 1)) +
+  theme_minimal()
+```
+
+To me it seems like the graph levels off at around 16 clusters which is what I will go with.
+
+Now we can visualize the clusters that were made with the K-Means algorithm.
+
+```{r}
+K <- 16
+
+kmeans16 <- kmeans(number_stats, K, nstart=20, iter.max = 20)
+km_centers <- as.data.frame(kmeans16$centers)
+
+km_centers$Cluster <- c('Cluster 1', 'Cluster 2', 'Cluster 3',
+                       'Cluster 4', 'Cluster 5', 'Cluster 6',
+                       'Cluster 7', 'Cluster 8', 'Cluster 9',
+                       'Cluster 10', 'Cluster 11', 'Cluster 12',
+                       'Cluster 13', 'Cluster 14', 'Cluster 15',
+                       'Cluster 16') 
+
+km_centers <- km_centers %>%
+  pivot_longer(!Cluster, names_to = 'names', values_to = 'values')
+
+# reset the order of clusters for plotting (cluster 10 would default to come after cluster 1 and before cluster 2)
+km_centers$Cluster <- factor(km_centers$Cluster, levels=c('Cluster 1', 'Cluster 2', 'Cluster 3',
+                                                          'Cluster 4', 'Cluster 5', 'Cluster 6',
+                                                          'Cluster 7', 'Cluster 8', 'Cluster 9',
+                                                          'Cluster 10', 'Cluster 11', 'Cluster 12',
+                                                          'Cluster 13', 'Cluster 14', 'Cluster 15',
+                                                          'Cluster 16'))
+```
+
+```{r}
+km_centers %>% 
+  ggplot(aes(x=names, y=values, color=Cluster)) + 
+  geom_point(color="#232D4B") + # color points
+  gghighlight(Cluster=='Cluster 16', use_direct_label = FALSE) + # highlight cluster 1
+  labs(x = "Predictor", y = "Cluster Center",  # axis labels
+       title = "Visualizing K-Means Cluster Makeups", # plot title
+       subtitle = "Cluster 1") +  # plot subtitle
+  theme_minimal() + # add themes
+  theme(legend.position = "none", # manually adjust themes
+        axis.text.x = element_text(angle=45, size=10))
+```
+
+As seen in the chart, this cluster of players are great passers of the ball, especially progressively, while also doing a decent amount of defensive work. Some notable players in this cluster include Trent Alexander-Arnold from Liverpool, Rodri from Manchester City, and Bruno Fernandes from Manchester United.
+
+Lets take a look at all of the clusters
+
+```{r}
+km_centers %>% 
+  ggplot(aes(x=names, y=values, color=Cluster)) + 
+  geom_point() + # plot points # color points
+  gghighlight(use_direct_label = FALSE) + # highlight each cluster
+  facet_wrap(~ Cluster, ncol=4) + # create seperate plots for each cluster
+  labs(x = "Predictor", y = "Cluster Center", 
+       title = "Visualizing K-Means Cluster Makeups") + 
+  theme_minimal() +
+  theme(legend.position = "none", strip.text = element_text(face='bold'),
+        axis.text.x = element_text(angle=90, size=6), # alter axis text
+        panel.grid.minor = element_blank())
+```
+
+Looking at the plots of all the clusters, we can name these clusters in terms of playstyles.
+
+Cluster 1: Progressive Playmakers - notable players: Trent Alexander-Arnold, Rodri, Bruno Fernandes
+
+Cluster 2: Calm Center Backs - notable players: Mathijs De Ligt, Keven Schlotterbeck
+
+Cluster 3: No-Nonsense Center Backs - notable players: Sergio Ramos, Dan Burn, Ben Mee
+
+Cluster 4: Ineffective Dribblers - notable players: Marcus Rashford, Ayoze Perez, Ruben Loftus-Cheek
+
+Cluster 5: Defensive Progressers - notable players: Alphonso Davies, Joao Cancelo, Filip Kostic
+
+Cluster 6: Defensive Enforcers - notable players: Moises Caicedo, Aaron Wan-Bissaka, Eduardo Camavinga
+
+Cluster 7: Do-it-all Players - notable players: Antoine Griezmann, Douglas Luiz, Khephren Thuram
+
+Cluster 8: Attacking Playmakers - notable players: Kevin De Bruyne, Thomas Muller, Cole Palmer
+
+Cluster 9: Ball-playing Defenders - Thiago Silva, John Stones, Virgil Van Dijk
+
+Cluster 10: 'Mid' - no notable players
+
+Cluster 11: Contributive Goalscorers - notable players: Erling Haaland, Kylian Mbappe, Harry Kane
+
+Cluster 12: Possession Keepers - notable players: Frenkie De Jong, Jorginho, Declan Rice
+
+Cluster 13: Pacey Dribblers - notable players: Vinicius Jr., Christian Pulisic, Ousmane Dembele
+
+Cluster 14: Jack of all trades, master of none - no notable players
+
+Cluster 15: Defensive Workhorses - notable players: Casemiro, Joao Palhinha, Adam Wharton
+
+Cluster 16: Pure Goalscorers - notable players: Olivier Giroud, Dominic Calvert-Lewin, Romelu Lukaku
+
+## Principle Component Analysis (PCA)
+
+PCA is an unsupervised dimensionality reduction technique. This means that we can use PCA to manufacture new predictor variables in order to display the data within 2 dimensions. We first need to determine the amount of variance that is explained bay each principle component.
+
+```{r}
+pca <- prcomp(number_stats) # perform Principle Component Analysis 
+pca_summary <- summary(pca) # summary of PCA model
+
+# plot % of variance between players explained by each subsequent PC 
+tibble(imp = pca_summary$importance[2,], n = 1:length(imp)) %>% # get importance scores for PCA summary
+  ggplot(aes(x=n, y=imp)) + 
+  labs(x = 'Principle Component #', y = '% of Variance Explained by Component',
+       title = 'Variance Explained by Each PC') +
+  geom_point(color="#F84C1E") + geom_line(color="#232D4B") + 
+  theme_minimal() + scale_x_continuous(breaks=seq(1, 20, 1)) + # set x-axis
+  scale_y_continuous(labels=scales::percent) + # change y-axis from proportion to percentage
+  theme(panel.grid.minor.x = element_blank(), panel.grid.minor.y = element_blank())
+```
+
+We can use the first two principle components as they explain the highest percentage of variance. We can combine this with the K-means algorithm to visualize the difference between the clusters in two dimensions.
+
+```{r}
+pc2 <- as.data.frame(pca$x[,1:2]) # extract first two PCs
+pc2$Cluster <- as.factor(kmeans16$cluster) # add player clusters 
+cluster1_var <- round(pca_summary$importance[2,1], 4) * 100 # get variance explained by cluster 1
+cluster2_var <- round(pca_summary$importance[2,2], 4) * 100 # get variance explained by cluster 2
+
+# how different are the clusters when scaled down to two dimensions? 
+pc2 %>% 
+  ggplot(aes(x=PC1, y=PC2, color=Cluster, shape=Cluster)) + 
+  geom_point(alpha=0.3) +
+  scale_fill_discrete() +
+  geom_rug() + # great way to visualize points on a single axis
+  theme_minimal() + stat_ellipse(level=(2/3)) + # set ellipse value to one standard deviation
+  scale_shape_manual(values=seq(0,15)) + 
+  labs(x = paste0('PC1 (Accounts for ', cluster1_var, '% of Variance)'), # define cluster 1 % of variance
+       y = paste0('PC2 (Accounts for ', cluster2_var, '% of Variance)'), # define cluster 2 % of variance
+       title = 'Visualizing K-Means Cluster Differences in 2D')
+```
+
+## Hierarchical Clustering
+
+As we have already created and scaled our data set, we can go straight into performing hierarchical clustering. First, we can compare the different types of hierarchical clustering: complete, average, and single.
+
+```{r}
+hc.complete <- hclust(dist(number_stats), method = "complete")
+hc.average <- hclust(dist(number_stats), method = "average")
+hc.single <- hclust(dist(number_stats), method = "single")
+ 
+
+par(mfrow = c(1, 3))
+plot(hc.complete, main = "Complete Linkage", xlab = "", sub = "", cex = .9)
+plot(hc.average, main = "Average Linkage", xlab = "", sub = "", cex = .9)
+plot(hc.single, main = "Single Linkage", xlab = "", sub = "", cex = .9)
+```
+
+As seen, the different hierarchical clustering methods definitely achieve different results. Both the Average and Single Linkage appear to be quite unbalanced. Therefore we will be using the Complete Linkage model.
+
+We can cut the dendrogram at a hieght to yield a specific amount of clusters. Because I used 16 clusters for the K-Means model, I picked the same amount of clusters for the Hierarchical Clustering model.
+
+```{r}
+hc.clusters <- cutree(hc.complete, k = 16)
+
+
+player_hc <- cbind(player_stats, cluster=hc.clusters)
+
+player_hc %>% 
+  group_by(cluster) %>% 
+  summarize(count=n())
+```
+
+While looking at the amount of players grouped into each cluster, we can notice something very interesting happening. Some of the clusters have very few players, specifically 14, 15, and 16 which have 1, 2, and 5 players respectively.
+
+Let's look at which player was clustered into his own category.
+
+```{r}
+player_hc %>% 
+  filter(cluster==14) %>% 
+  select(Player, cluster)
+```
+
+Kevin De Bruyne is an attacking midfielder who plays for Manchester City, and we clustered him into the Attacking Playmaker cluster using our K-Means algorithm. However taking a closer look at his statistics with the other players he was compared to, we see that he may indeed be in a category of his own.
+
+```{r}
+cluster8 <- tibble(name=player_stats_p90$Player, Assists=player_stats_p90$Ast, `Expected Assists`=player_stats_p90$xAG) %>%
+  dplyr::arrange(desc(`Expected Assists`))
+
+head(cluster8)
+```
+
+He has nearly DOUBLE the amount of Assists/90 and Expected Assists/90 as the next closest players who were grouped in the same cluster as him when we did K-Means! Although it may seem odd that a cluster only has 1 player in it, Kevin De Bruyne really might be a one-of-a kind player.
+
+```{r}
+par(mfrow = c(1, 2))
+player_hc %>% 
+  filter(cluster==15) %>% 
+  select(Player, cluster)
+
+player_hc %>% 
+  filter(cluster==16) %>% 
+  select(Player, cluster)
+```
+
+A similar thing can be seen with the players in cluster 15 and 16 which can be found at the top of the charts for dribbling and passing respectively. Although not to the extent of De Bruyne.
+
+```{r}
+sorted_dribbles <- tibble(name=player_stats_p90$Player, `Dribbles Attempted`=player_stats_p90$TakeAtt, `Success %`=player_stats_p90$`Succ%`) %>%
+  dplyr::arrange(desc(`Dribbles Attempted`))
+
+head(sorted_dribbles)
+
+sorted_passes <- tibble(name=player_stats_p90$Player, `Passes`=player_stats_p90$Att) %>%
+  dplyr::arrange(desc(`Passes`))
+
+head(sorted_passes)
+```
+
+## Conclusion
+
+Throughout this report, we have observed different ways to cluster soccer players into different playstyles. Combining the results with my knowledge of soccer, I have determined that the hierarchical clustering model performed the best. Although it resulted in a few small clusters, those clusters were reserved for the best of the best players which makes a lot of sense.
+
+This report has some practical applications in the soccer world as well. As teams sell players and look to acquire new ones, they can examine which players possess the same skills as the departed player and adequately replace them. Although decisions should not be based solely off this model, it can definitely be used as a base to then do further research into specific players.
